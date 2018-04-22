@@ -99,7 +99,7 @@ static struct ovs_mutex dp_netdev_mutex = OVS_MUTEX_INITIALIZER;
 static struct shash dp_netdevs OVS_GUARDED_BY(dp_netdev_mutex)
     = SHASH_INITIALIZER(&dp_netdevs);
 
-static struct vlog_rate_limit upcall_rl = VLOG_RATE_LIMIT_INIT(600, 600);
+//static struct vlog_rate_limit upcall_rl = VLOG_RATE_LIMIT_INIT(600, 600);
 
 #define DP_NETDEV_CS_SUPPORTED_MASK (CS_NEW | CS_ESTABLISHED | CS_RELATED \
                                      | CS_INVALID | CS_REPLY_DIR | CS_TRACKED \
@@ -2480,7 +2480,7 @@ dp_netdev_flow_add(struct dp_netdev_pmd_thread *pmd,
     cmap_insert(&pmd->flow_table, CONST_CAST(struct cmap_node *, &flow->node),
                 dp_netdev_flow_hash(&flow->ufid));
 
-    if (OVS_UNLIKELY(!VLOG_DROP_DBG((&upcall_rl)))) {
+//    if (OVS_UNLIKELY(!VLOG_DROP_DBG((&upcall_rl)))) {
         struct ds ds = DS_EMPTY_INITIALIZER;
         struct ofpbuf key_buf, mask_buf;
         struct odp_flow_key_parms odp_parms = {
@@ -2521,8 +2521,10 @@ dp_netdev_flow_add(struct dp_netdev_pmd_thread *pmd,
 
         VLOG_DBG("%s", ds_cstr(&ds));
 
+vlog(&this_module,  VLL_WARN, "DARRELL dp_netdev_flow_add: %s", ds_cstr(&ds));
+
         ds_destroy(&ds);
-    }
+//    }
 
     return flow;
 }
@@ -4841,7 +4843,7 @@ dp_netdev_upcall(struct dp_netdev_pmd_thread *pmd, struct dp_packet *packet_,
         return ENODEV;
     }
 
-    if (OVS_UNLIKELY(!VLOG_DROP_DBG(&upcall_rl))) {
+//    if (OVS_UNLIKELY(!VLOG_DROP_DBG(&upcall_rl))) {
         struct ds ds = DS_EMPTY_INITIALIZER;
         char *packet_str;
         struct ofpbuf key;
@@ -4860,11 +4862,14 @@ dp_netdev_upcall(struct dp_netdev_pmd_thread *pmd, struct dp_packet *packet_,
         VLOG_DBG("%s: %s upcall:\n%s\n%s", dp->name,
                  dpif_upcall_type_to_string(type), ds_cstr(&ds), packet_str);
 
+vlog(&this_module, VLL_WARN, "DARRELL dp_netdev_upcall:%s: %s upcall:\n%s\n%s",
+     dp->name, dpif_upcall_type_to_string(type), ds_cstr(&ds), packet_str);
+
         ofpbuf_uninit(&key);
         free(packet_str);
 
         ds_destroy(&ds);
-    }
+//    }
 
     return dp->upcall_cb(packet_, flow, ufid, pmd->core_id, type, userdata,
                          actions, wc, put_actions, dp->upcall_aux);
@@ -5076,12 +5081,39 @@ handle_packet_upcall(struct dp_netdev_pmd_thread *pmd,
     ofpbuf_clear(actions);
     ofpbuf_clear(put_actions);
 
+
+vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall ENTER");
+vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall flow: %p", &match.flow);
+vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall odp_port: %d",
+     match.flow.in_port.odp_port);
+vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall ofp_port: %d",
+     match.flow.in_port.ofp_port);
+
+vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall dl_src:" ETH_ADDR_FMT,
+     ETH_ADDR_ARGS(match.flow.dl_src));
+vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall dl_dst:" ETH_ADDR_FMT,
+     ETH_ADDR_ARGS(match.flow.dl_dst));
+
+vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall dl_type: %x",
+     ntohs(match.flow.dl_type));
+if (match.flow.dl_type == htons(ETH_TYPE_ARP)){
+    vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall arp type: %d",
+         match.flow.nw_proto);
+}
+vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall nw_src: 0x%x/%x",
+     ntohl(match.flow.nw_src), ntohl(match.wc.masks.nw_src));
+vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall nw_dst: 0x%x/%x",
+     ntohl(match.flow.nw_dst), ntohl(match.wc.masks.nw_dst));
+vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall nw_proto: %d/0x%x",
+     match.flow.nw_proto, match.wc.masks.nw_proto);
+
     dpif_flow_hash(pmd->dp->dpif, &match.flow, sizeof match.flow, &ufid);
     error = dp_netdev_upcall(pmd, packet, &match.flow, &match.wc,
                              &ufid, DPIF_UC_MISS, NULL, actions,
                              put_actions);
     if (OVS_UNLIKELY(error && error != ENOSPC)) {
         dp_packet_delete(packet);
+vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall error: %d", error);
         return error;
     }
 
@@ -5099,6 +5131,17 @@ handle_packet_upcall(struct dp_netdev_pmd_thread *pmd,
      * the actions.  Otherwise, if there are any slow path actions,
      * we'll send the packet up twice. */
     dp_packet_batch_init_packet(&b, packet);
+
+struct ds ds = DS_EMPTY_INITIALIZER;
+format_odp_actions(&ds, actions->data, actions->size, NULL);
+vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall actions is: %s", ds_cstr(&ds));
+ds_destroy(&ds);
+
+struct ds ds2 = DS_EMPTY_INITIALIZER;
+format_odp_actions(&ds2, put_actions->data, put_actions->size, NULL);
+vlog(&this_module,  VLL_WARN, "DARRELL handle_packet_upcall put_actions is: %s", ds_cstr(&ds2));
+ds_destroy(&ds2);
+
     dp_netdev_execute_actions(pmd, &b, true, &match.flow,
                               actions->data, actions->size);
 

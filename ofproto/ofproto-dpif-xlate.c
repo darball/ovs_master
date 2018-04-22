@@ -3328,6 +3328,13 @@ propagate_tunnel_data_to_flow__(struct flow *dst_flow,
         }
     }
     dst_flow->nw_proto = nw_proto;
+
+VLOG_WARN("DARRELL propagate_tunnel_data_to_flow__: flow->nw_frag %d", dst_flow->nw_frag);
+VLOG_WARN("DARRELL propagate_tunnel_data_to_flow__: flow->in_port.ofp_port %u", dst_flow->in_port.ofp_port);
+VLOG_WARN("DARRELL propagate_tunnel_data_to_flow__: flow->nw_src"IP_FMT, IP_ARGS(dst_flow->nw_src));
+VLOG_WARN("DARRELL propagate_tunnel_data_to_flow__: flow->nw_dst"IP_FMT, IP_ARGS(dst_flow->nw_dst));
+VLOG_WARN("DARRELL propagate_tunnel_data_to_flow__: flow->nw_proto %d", dst_flow->nw_proto);
+
 }
 
 /*
@@ -3366,8 +3373,13 @@ propagate_tunnel_data_to_flow(struct xlate_ctx *ctx, struct eth_addr dmac,
      * Update base_flow first followed by flow as the dst_flow gets modified
      * in the function.
      */
+VLOG_WARN("DARRELL: call propagate_tunnel_data_to_flow__ for base_flow");
+
     propagate_tunnel_data_to_flow__(base_flow, flow, dmac, smac, s_ip6, s_ip,
                                     is_tnl_ipv6, nw_proto);
+
+VLOG_WARN("DARRELL: call propagate_tunnel_data_to_flow__ for flow");
+
     propagate_tunnel_data_to_flow__(flow, flow, dmac, smac, s_ip6, s_ip,
                                     is_tnl_ipv6, nw_proto);
 }
@@ -3427,6 +3439,7 @@ native_tunnel_output(struct xlate_ctx *ctx, const struct xport *xport,
         s_ip = in6_addr_get_mapped_ipv4(&s_ip6);
     }
 
+// Tunnel mac binding is used here when forwarding out a tunnel
     err = tnl_neigh_lookup(out_dev->xbridge->name, &d_ip6, &dmac);
     if (err) {
         xlate_report(ctx, OFT_DETAIL,
@@ -6975,6 +6988,15 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
 
     struct flow *flow = &xin->flow;
 
+    VLOG_WARN("DARRELL xlate_actions: ENTER flow->nw_frag %d", flow->nw_frag);
+    VLOG_WARN("DARRELL xlate_actions: ENTER flow->in_port.ofp_port %u", flow->in_port.ofp_port);
+    VLOG_WARN("DARRELL xlate_actions: ENTER flow->nw_src"IP_FMT, IP_ARGS(flow->nw_src));
+    VLOG_WARN("DARRELL xlate_actions: ENTER flow->nw_dst"IP_FMT, IP_ARGS(flow->nw_dst));
+    VLOG_WARN("DARRELL xlate_actions: ENTER flow->nw_proto %d", flow->nw_proto);
+    VLOG_WARN("DARRELL xlate_actions: ENTER flow tunnel src"IP_FMT, IP_ARGS(flow->tunnel.ip_src));
+    VLOG_WARN("DARRELL xlate_actions: ENTER flow tunnel dst"IP_FMT, IP_ARGS(flow->tunnel.ip_dst));
+
+
     uint8_t stack_stub[1024];
     uint64_t action_set_stub[1024 / 8];
     uint64_t frozen_actions_stub[1024 / 8];
@@ -7043,6 +7065,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
     xin->trace = xlate_report(&ctx, OFT_BRIDGE, "bridge(\"%s\")",
                               xbridge->name);
     if (xin->frozen_state) {
+VLOG_WARN("DARRELL xlate_actions: frozen_state");
         const struct frozen_state *state = xin->frozen_state;
 
         struct ovs_list *old_trace = xin->trace;
@@ -7117,6 +7140,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
 
         xin->trace = old_trace;
     } else if (OVS_UNLIKELY(flow->recirc_id)) {
+VLOG_WARN("DARRELL xlate_actions: not frozen_state");
         xlate_report_error(&ctx,
                            "Recirculation context not found for ID %"PRIx32,
                            flow->recirc_id);
@@ -7126,6 +7150,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
 
     /* Tunnel metadata in udpif format must be normalized before translation. */
     if (flow->tunnel.flags & FLOW_TNL_F_UDPIF) {
+VLOG_WARN("DARRELL xlate_actions: flow->tunnel.flags & FLOW_TNL_F_UDPIF");
         const struct tun_table *tun_tab = ofproto_get_tun_tab(
             &ctx.xbridge->ofproto->up);
         int err;
@@ -7139,6 +7164,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
             goto exit;
         }
     } else if (!flow->tunnel.metadata.tab) {
+VLOG_WARN("DARRELL xlate_actions: !flow->tunnel.metadata.tab");
         /* If the original flow did not come in on a tunnel, then it won't have
          * FLOW_TNL_F_UDPIF set. However, we still need to have a metadata
          * table in case we generate tunnel actions. */
@@ -7149,6 +7175,9 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
 
     /* Get the proximate input port of the packet.  (If xin->frozen_state,
      * flow->in_port is the ultimate input port of the packet.) */
+VLOG_WARN("DARRELL xlate_actions: ctx.base_flow.in_port.ofp_port %u",
+          ctx.base_flow.in_port.ofp_port);
+
     struct xport *in_port = get_ofp_port(xbridge,
                                          ctx.base_flow.in_port.ofp_port);
     if (in_port && !in_port->peer) {
@@ -7157,6 +7186,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
 
     if (flow->packet_type != htonl(PT_ETH) && in_port &&
         in_port->pt_mode == NETDEV_PT_LEGACY_L3 && ctx.table_id == 0) {
+VLOG_WARN("DARRELL xlate_actions: NETDEV_PT_LEGACY_L3");
         /* Add dummy Ethernet header to non-L2 packet if it's coming from a
          * L3 port. So all packets will be L2 packets for lookup.
          * The dl_type has already been set from the packet_type. */
@@ -7167,14 +7197,17 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
     }
 
     if (!xin->ofpacts && !ctx.rule) {
+VLOG_WARN("DARRELL xlate_actions: !xin->ofpacts && !ctx.rule");
         ctx.rule = rule_dpif_lookup_from_table(
             ctx.xbridge->ofproto, ctx.xin->tables_version, flow, ctx.wc,
             ctx.xin->resubmit_stats, &ctx.table_id,
             flow->in_port.ofp_port, true, true, ctx.xin->xcache);
         if (ctx.xin->resubmit_stats) {
+VLOG_WARN("DARRELL xlate_actions: ctx.xin->resubmit_stat");
             rule_dpif_credit_stats(ctx.rule, ctx.xin->resubmit_stats);
         }
         if (ctx.xin->xcache) {
+VLOG_WARN("DARRELL xlate_actions: ctx.xin->xcache");
             struct xc_entry *entry;
 
             entry = xlate_cache_add_entry(ctx.xin->xcache, XC_RULE);
@@ -7187,6 +7220,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
 
     /* Tunnel stats only for not-thawed packets. */
     if (!xin->frozen_state && in_port && in_port->is_tunnel) {
+VLOG_WARN("DARRELL xlate_actions: !xin->frozen_state && in_port && in_port->is_tunnel");
         if (ctx.xin->resubmit_stats) {
             netdev_vport_inc_rx(in_port->netdev, ctx.xin->resubmit_stats);
             if (in_port->bfd) {
@@ -7194,6 +7228,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
             }
         }
         if (ctx.xin->xcache) {
+VLOG_WARN("DARRELL xlate_actions: ctx.xin->xcache 2");
             struct xc_entry *entry;
 
             entry = xlate_cache_add_entry(ctx.xin->xcache, XC_NETDEV);
@@ -7203,16 +7238,19 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
     }
 
     if (!xin->frozen_state && process_special(&ctx, in_port)) {
+VLOG_WARN("DARRELL xlate_actions: !xin->frozen_state && process_special(&ctx, in_port)");
         /* process_special() did all the processing for this packet.
          *
          * We do not perform special processing on thawed packets, since that
          * was done before they were frozen and should not be redone. */
     } else if (in_port && in_port->xbundle
                && xbundle_mirror_out(xbridge, in_port->xbundle)) {
+VLOG_WARN("DARRELL xlate_actions: in_port && in_port->xbundle");
         xlate_report_error(&ctx, "dropping packet received on port "
                            "%s, which is reserved exclusively for mirroring",
                            in_port->xbundle->name);
     } else {
+VLOG_WARN("DARRELL xlate_actions: big else");
         /* Sampling is done on initial reception; don't redo after thawing. */
         unsigned int user_cookie_offset = 0;
         if (!xin->frozen_state) {
@@ -7223,10 +7261,13 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
 
         if (tnl_process_ecn(flow)
             && (!in_port || may_receive(in_port, &ctx))) {
+VLOG_WARN("DARRELL xlate_actions: big else");
+
             const struct ofpact *ofpacts;
             size_t ofpacts_len;
 
             if (xin->ofpacts) {
+VLOG_WARN("DARRELL xlate_actions: xin->ofpacts after big else");
                 ofpacts = xin->ofpacts;
                 ofpacts_len = xin->ofpacts_len;
             } else if (ctx.rule) {
@@ -7240,6 +7281,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
             }
 
             mirror_ingress_packet(&ctx);
+VLOG_WARN("DARRELL xlate_actions: calling do_xlate_actions");
             do_xlate_actions(ofpacts, ofpacts_len, &ctx, true);
             if (ctx.error) {
                 goto exit;
@@ -7268,6 +7310,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
             && xbridge->has_in_band
             && in_band_must_output_to_local_port(flow)
             && !actions_output_to_local_port(&ctx)) {
+VLOG_WARN("DARRELL xlate_actions: in band special check");
             compose_output_action(&ctx, OFPP_LOCAL, NULL, false, false);
         }
 
@@ -7307,6 +7350,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
 
     /* Translate tunnel metadata masks to udpif format if necessary. */
     if (xin->upcall_flow->tunnel.flags & FLOW_TNL_F_UDPIF) {
+VLOG_WARN("DARRELL xlate_actions: xin->upcall_flow->tunnel.flags & FLOW_TNL_F_UDPIF");
         if (ctx.wc->masks.tunnel.metadata.present.map) {
             const struct flow_tnl *upcall_tnl = &xin->upcall_flow->tunnel;
             struct geneve_opt opts[TLV_TOT_OPT_SIZE /
@@ -7326,6 +7370,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
         ctx.wc->masks.tunnel.metadata.tab = NULL;
         ctx.wc->masks.tunnel.flags |= FLOW_TNL_F_UDPIF;
     } else if (!xin->upcall_flow->tunnel.metadata.tab) {
+VLOG_WARN("DARRELL xlate_actions: !xin->upcall_flow->tunnel.metadata.tab");
         /* If we didn't have options in UDPIF format and didn't have an existing
          * metadata table, then it means that there were no options at all when
          * we started processing and any wildcards we picked up were from

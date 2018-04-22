@@ -336,6 +336,10 @@ NS_CHECK_EXEC([at_ns0], [ping -s 3200 -q -c 3 -i 0.3 -w 2 10.1.1.100 | FORMAT_PI
 3 packets transmitted, 3 received, 0% packet loss, time 0ms
 ])
 
+#AT_CHECK([ovs-appctl dpif/show])
+#AT_CHECK([ovs-appctl dpif/dump-flows br0], [0])
+#AT_CHECK([ovs-appctl dpif/dump-flows br-underlay], [0])
+
 OVS_TRAFFIC_VSWITCHD_STOP
 AT_CLEANUP
 

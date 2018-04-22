@@ -632,6 +632,9 @@ udpif_set_threads(struct udpif *udpif, size_t n_handlers_,
 void
 udpif_synchronize(struct udpif *udpif)
 {
+
+vlog(&this_module,  VLL_WARN, "DARRELL udpif_synchronize ENTER");
+
     /* This is stronger than necessary.  It would be sufficient to ensure
      * (somehow) that each handler and revalidator thread had passed through
      * its main loop once. */
@@ -1141,6 +1144,8 @@ upcall_xlate(struct udpif *udpif, struct upcall *upcall,
     if (upcall->type == MISS_UPCALL) {
         xin.resubmit_stats = &stats;
 
+VLOG_WARN("DARRELL upcall_xlate: MISS_UPCALL");
+
         if (xin.frozen_state) {
             /* We may install a datapath flow only if we get a reference to the
              * recirculation context (otherwise we could have recirculation
@@ -1149,8 +1154,10 @@ upcall_xlate(struct udpif *udpif, struct upcall *upcall,
              * don't install the flow. */
             upcall->recirc = recirc_id_node_from_state(xin.frozen_state);
             upcall->have_recirc_ref = recirc_id_node_try_ref_rcu(upcall->recirc);
+VLOG_WARN("DARRELL upcall_xlate: xin.frozen_state: %d", upcall->have_recirc_ref);
         }
     } else {
+VLOG_WARN("DARRELL upcall_xlate: NOT MISS_UPCALL");
         /* For non-miss upcalls, we are either executing actions (one of which
          * is an userspace action) for an upcall, in which case the stats have
          * already been taken care of, or there's a flow in the datapath which
@@ -1179,6 +1186,7 @@ upcall_xlate(struct udpif *udpif, struct upcall *upcall,
     }
 
     if (wc) {
+VLOG_WARN("DARRELL upcall_xlate: wildcard non-null");
         /* Convert the input port wildcard from OFP to ODP format. There's no
          * real way to do this for arbitrary bitmasks since the numbering spaces
          * aren't the same. However, flow translation always exact matches the
@@ -1189,12 +1197,15 @@ upcall_xlate(struct udpif *udpif, struct upcall *upcall,
     upcall->xout_initialized = true;
 
     if (upcall->fitness == ODP_FIT_TOO_LITTLE) {
+VLOG_WARN("DARRELL upcall_xlate: ODP_FIT_TOO_LITTLE");
         upcall->xout.slow |= SLOW_MATCH;
     }
     if (!upcall->xout.slow) {
+VLOG_WARN("DARRELL upcall_xlate: !upcall->xout.slow");
         ofpbuf_use_const(&upcall->put_actions,
                          odp_actions->data, odp_actions->size);
     } else {
+VLOG_WARN("DARRELL upcall_xlate: upcall->xout.slow");
         /* upcall->put_actions already initialized by upcall_receive(). */
         compose_slow_path(udpif, &upcall->xout, upcall->flow,
                           upcall->flow->in_port.odp_port, upcall->ofp_in_port,
@@ -1207,6 +1218,7 @@ upcall_xlate(struct udpif *udpif, struct upcall *upcall,
      * going to create new datapath flows for actual datapath misses, there is
      * no point in creating a ukey otherwise. */
     if (upcall->type == MISS_UPCALL) {
+VLOG_WARN("DARRELL upcall_xlate: upcall->type == MISS_UPCALL");
         upcall->ukey = ukey_create_from_upcall(upcall, wc);
     }
 }
@@ -1269,10 +1281,20 @@ upcall_cb(const struct dp_packet *packet, const struct flow *flow, ovs_u128 *ufi
     bool megaflow;
     int error;
 
+vlog(&this_module,  VLL_WARN, "DARRELL upcall_cb ENTER");
+struct ds ds = DS_EMPTY_INITIALIZER;
+ds_put_format(&ds, "type %d; flow %p", type, flow);
+odp_format_ufid(ufid, &ds);
+VLOG_WARN("DARRELL upcall_cb type: %s", ds_cstr(&ds));
+ds_destroy(&ds);
+
     atomic_read_relaxed(&enable_megaflows, &megaflow);
 
     error = upcall_receive(&upcall, udpif->backer, packet, type, userdata,
                            flow, 0, ufid, pmd_id);
+
+VLOG_WARN("DARRELL upcall_cb: ofp_in_port: %u", upcall.ofp_in_port);
+
     if (error) {
         return error;
     }
@@ -1376,6 +1398,7 @@ process_upcall(struct udpif *udpif, struct upcall *upcall,
     switch (upcall->type) {
     case MISS_UPCALL:
     case SLOW_PATH_UPCALL:
+ VLOG_WARN("DARRELL process_upcall: type: %d", upcall->type);
         upcall_xlate(udpif, upcall, odp_actions, wc);
         return 0;
 
