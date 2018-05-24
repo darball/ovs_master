@@ -2786,9 +2786,9 @@ odp_tun_key_from_attr__(const struct nlattr *attr, bool is_mask,
 
             memcpy(&opts, nl_attr_get(a), attr_len);
 
-            tun->erspan_ver = opts.version;
+            tun->erspan_ver = opts.bh.ver;
             if (tun->erspan_ver == 1) {
-                tun->erspan_idx = ntohl(opts.u.index);
+                tun->erspan_idx = ntohl(get_16aligned_be32(&opts.u.index));
             } else if (tun->erspan_ver == 2) {
                 tun->erspan_dir = opts.u.md2.dir;
                 tun->erspan_hwid = get_hwid(&opts.u.md2);
@@ -2890,10 +2890,11 @@ tun_key_to_attr(struct ofpbuf *a, const struct flow_tnl *tun_key,
         !strcmp(tnl_type, "ip6erspan")) &&
         (tun_key->erspan_ver == 1 || tun_key->erspan_ver == 2)) {
         struct erspan_metadata opts;
+        memset(&opts, 0, sizeof opts);
 
-        opts.version = tun_key->erspan_ver;
-        if (opts.version == 1) {
-            opts.u.index = htonl(tun_key->erspan_idx);
+        opts.bh.ver = tun_key->erspan_ver;
+        if (opts.bh.ver == 1) {
+            put_16aligned_be32(&opts.u.index, htonl(tun_key->erspan_idx));
         } else {
             opts.u.md2.dir = tun_key->erspan_dir;
             set_hwid(&opts.u.md2, tun_key->erspan_hwid);
@@ -3368,22 +3369,23 @@ format_odp_tun_erspan_opt(const struct nlattr *attr,
     opts = nl_attr_get(attr);
     mask = mask_attr ? nl_attr_get(mask_attr) : NULL;
 
-    ver = (uint8_t)opts->version;
+    ver = opts->bh.ver;
     if (mask) {
-        ver_ma = (uint8_t)mask->version;
+        ver_ma = mask->bh.ver;
     }
 
     format_u8u(ds, "ver", ver, mask ? &ver_ma : NULL, verbose);
 
-    if (opts->version == 1) {
+    if (opts->bh.ver == 1) {
         if (mask) {
             ds_put_format(ds, "idx=%#"PRIx32"/%#"PRIx32",",
-                          ntohl(opts->u.index),
-                          ntohl(mask->u.index));
+                          ntohl(get_16aligned_be32(&opts->u.index)),
+                          ntohl(get_16aligned_be32(&mask->u.index)));
         } else {
-            ds_put_format(ds, "idx=%#"PRIx32",", ntohl(opts->u.index));
+            ds_put_format(ds, "idx=%#"PRIx32",",
+                          ntohl(get_16aligned_be32(&opts->u.index)));
         }
-    } else if (opts->version == 2) {
+    } else if (opts->bh.ver == 2) {
         dir = opts->u.md2.dir;
         hwid = opts->u.md2.hwid;
         if (mask) {
@@ -4859,10 +4861,11 @@ scan_erspan_metadata(const char *s,
 
         if (!strncmp(s, ")", 1)) {
             s += 1;
-            key->version = ver;
-            key->u.index = htonl(idx);
+            memset(&key->bh, 0, sizeof key->bh);
+            key->bh.ver = ver;
+            put_16aligned_be32(&key->u.index, htonl(idx));
             if (mask) {
-                mask->u.index = htonl(idx_mask);
+                put_16aligned_be32(&mask->u.index, htonl(idx_mask));
             }
         }
         return s - s_base;
@@ -4882,7 +4885,8 @@ scan_erspan_metadata(const char *s,
 
         if (!strncmp(s, ")", 1)) {
             s += 1;
-            key->version = ver;
+            memset(&key->bh, 0, sizeof key->bh);
+            key->bh.ver = ver;
             key->u.md2.hwid = hwid;
             key->u.md2.dir = dir;
             if (mask) {

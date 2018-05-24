@@ -1312,10 +1312,10 @@ struct erspan_md2 {
 };
 
 struct erspan_metadata {
-    int version;
+    struct erspan_base_hdr bh;
     union {
-        ovs_be32 index;         /* Version 1 (type II)*/
-        struct erspan_md2 md2;  /* Version 2 (type III) */
+        ovs_16aligned_be32 index;  /* Version 1 (type II). */
+        struct erspan_md2 md2;     /* Version 2 (type III). */
     } u;
 };
 
