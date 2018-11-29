@@ -366,8 +366,6 @@ struct dp_netdev {
     char *pmd_cmask;
 
     uint64_t last_tnl_conf_seq;
-
-    struct conntrack conntrack;
 };
 
 static void meter_lock(const struct dp_netdev *dp, uint32_t meter_id)
@@ -1495,7 +1493,7 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
     dp->upcall_aux = NULL;
     dp->upcall_cb = NULL;
 
-    conntrack_init(&dp->conntrack);
+    conntrack_init();
 
     atomic_init(&dp->emc_insert_min, DEFAULT_EM_FLOW_INSERT_MIN);
     atomic_init(&dp->tx_flush_interval, DEFAULT_TX_FLUSH_INTERVAL);
@@ -1613,7 +1611,7 @@ dp_netdev_free(struct dp_netdev *dp)
     ovs_mutex_destroy(&dp->non_pmd_mutex);
     ovsthread_key_delete(dp->per_pmd_key);
 
-    conntrack_destroy(&dp->conntrack);
+    conntrack_destroy();
 
 
     seq_destroy(dp->reconfigure_seq);
@@ -6786,8 +6784,8 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
             VLOG_WARN_RL(&rl, "NAT specified without commit.");
         }
 
-        conntrack_execute(&dp->conntrack, packets_, aux->flow->dl_type, force,
-                          commit, zone, setmark, setlabel, aux->flow->tp_src,
+        conntrack_execute(packets_, aux->flow->dl_type, force, commit, zone,
+                          setmark, setlabel, aux->flow->tp_src,
                           aux->flow->tp_dst, helper, nat_action_info_ref,
                           pmd->ctx.now / 1000);
         break;
@@ -6836,23 +6834,16 @@ dp_netdev_execute_actions(struct dp_netdev_pmd_thread *pmd,
 struct dp_netdev_ct_dump {
     struct ct_dpif_dump_state up;
     struct conntrack_dump dump;
-    struct conntrack *ct;
-    struct dp_netdev *dp;
 };
 
 static int
-dpif_netdev_ct_dump_start(struct dpif *dpif, struct ct_dpif_dump_state **dump_,
+dpif_netdev_ct_dump_start(struct dpif *dpif OVS_UNUSED,
+                          struct ct_dpif_dump_state **dump_,
                           const uint16_t *pzone, int *ptot_bkts)
 {
-    struct dp_netdev *dp = get_dp_netdev(dpif);
-    struct dp_netdev_ct_dump *dump;
+    struct dp_netdev_ct_dump *dump = xzalloc(sizeof *dump);
 
-    dump = xzalloc(sizeof *dump);
-    dump->dp = dp;
-    dump->ct = &dp->conntrack;
-
-    conntrack_dump_start(&dp->conntrack, &dump->dump, pzone, ptot_bkts);
-
+    conntrack_dump_start(&dump->dump, pzone, ptot_bkts);
     *dump_ = &dump->up;
 
     return 0;
@@ -6887,39 +6878,31 @@ dpif_netdev_ct_dump_done(struct dpif *dpif OVS_UNUSED,
 }
 
 static int
-dpif_netdev_ct_flush(struct dpif *dpif, const uint16_t *zone,
+dpif_netdev_ct_flush(struct dpif *dpif OVS_UNUSED, const uint16_t *zone,
                      const struct ct_dpif_tuple *tuple)
 {
-    struct dp_netdev *dp = get_dp_netdev(dpif);
-
     if (tuple) {
-        return conntrack_flush_tuple(&dp->conntrack, tuple, zone ? *zone : 0);
+        return conntrack_flush_tuple(tuple, zone ? *zone : 0);
     }
-    return conntrack_flush(&dp->conntrack, zone);
+    return conntrack_flush(zone);
 }
 
 static int
-dpif_netdev_ct_set_maxconns(struct dpif *dpif, uint32_t maxconns)
+dpif_netdev_ct_set_maxconns(struct dpif *dpif OVS_UNUSED, uint32_t maxconns)
 {
-    struct dp_netdev *dp = get_dp_netdev(dpif);
-
-    return conntrack_set_maxconns(&dp->conntrack, maxconns);
+    return conntrack_set_maxconns(maxconns);
 }
 
 static int
-dpif_netdev_ct_get_maxconns(struct dpif *dpif, uint32_t *maxconns)
+dpif_netdev_ct_get_maxconns(struct dpif *dpif OVS_UNUSED, uint32_t *maxconns)
 {
-    struct dp_netdev *dp = get_dp_netdev(dpif);
-
-    return conntrack_get_maxconns(&dp->conntrack, maxconns);
+    return conntrack_get_maxconns(maxconns);
 }
 
 static int
-dpif_netdev_ct_get_nconns(struct dpif *dpif, uint32_t *nconns)
+dpif_netdev_ct_get_nconns(struct dpif *dpif OVS_UNUSED, uint32_t *nconns)
 {
-    struct dp_netdev *dp = get_dp_netdev(dpif);
-
-    return conntrack_get_nconns(&dp->conntrack, nconns);
+    return conntrack_get_nconns(nconns);
 }
 
 const struct dpif_class dpif_netdev_class = {
