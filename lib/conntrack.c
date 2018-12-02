@@ -1200,6 +1200,39 @@ process_one(struct dp_packet *pkt, struct conn_lookup_ctx *ctx, uint16_t zone,
     }
 
     handle_alg_ctl(ctx, pkt, ct_alg_ctl, conn, now, !!nat_action_info);
+
+    if (nat_action_info && ct_alg_ctl == CT_ALG_CTL_NONE) {
+        pkt->md.conn = conn;
+        pkt->md.reply = ctx->reply;
+        pkt->md.icmp_related = ctx->icmp_related;
+    } else {
+        pkt->md.conn = NULL;
+    }
+}
+
+static inline void
+process_one_fast(struct dp_packet *pkt, uint16_t zone,
+                 const uint32_t *setmark,
+                 const struct ovs_key_ct_labels *setlabel,
+                 const struct nat_action_info_t *nat_action_info,
+                 struct conn *conn)
+{
+    if (nat_action_info) {
+        handle_nat(pkt, conn, zone, pkt->md.reply, pkt->md.icmp_related);
+        pkt->md.conn = NULL;
+    }
+
+    pkt->md.ct_zone = zone;
+    pkt->md.ct_mark = conn->mark;
+    pkt->md.ct_label = conn->label;
+
+    if (setmark) {
+        set_mark(pkt, conn, setmark[0], setmark[1]);
+    }
+
+    if (setlabel) {
+        set_label(pkt, conn, &setlabel[0], &setlabel[1]);
+    }
 }
 
 /* Sends the packets in '*pkt_batch' through the connection tracker 'ct'.  All
@@ -1223,8 +1256,16 @@ conntrack_execute(struct dp_packet_batch *pkt_batch, ovs_be16 dl_type,
     struct conn_lookup_ctx ctx;
 
     DP_PACKET_BATCH_FOR_EACH (i, packet, pkt_batch) {
-        if (packet->md.ct_state == CS_INVALID
-            || !conn_key_extract(packet, dl_type, &ctx, zone)) {
+        struct conn *conn = packet->md.conn;
+        if (OVS_UNLIKELY(packet->md.ct_state == CS_INVALID)) {
+            write_ct_md(packet, zone, NULL, NULL, NULL);
+                continue;
+        } else if (conn && !force && !commit && conn->key.zone == zone) {
+            process_one_fast(packet, zone, setmark, setlabel, nat_action_info,
+                             packet->md.conn);
+            continue;
+        } else if (OVS_UNLIKELY(!conn_key_extract(packet, dl_type, &ctx,
+                                zone))) {
             packet->md.ct_state = CS_INVALID;
             write_ct_md(packet, zone, NULL, NULL, NULL);
             continue;
@@ -1242,6 +1283,7 @@ conntrack_clear(struct dp_packet *packet)
     /* According to pkt_metadata_init(), ct_state == 0 is enough to make all of
      * the conntrack fields invalid. */
     packet->md.ct_state = 0;
+    packet->md.conn = NULL;
 }
 
 static void
