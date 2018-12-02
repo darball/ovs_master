@@ -85,20 +85,32 @@ struct OVS_LOCKABLE ct_ce_lock {
     struct ovs_mutex lock;
 };
 
+struct conn_ext_nat {
+    struct nat_action_info_t *nat_info;
+    struct conn *nat_conn;
+};
+
+struct conn_ext_alg {
+    char *alg;
+    /* TCP sequence skew direction due to NATTing of FTP control messages;
+     * true if reply direction. */
+    int seq_skew;
+    struct conn_key master_key;
+    /* True if alg data connection. */
+    bool alg_related;
+    bool seq_skew_dir;
+};
+
 struct conn {
     struct conn_key key;
     struct conn_key rev_key;
-    /* Only used for orig_tuple support. */
-    struct conn_key master_key;
     struct ct_ce_lock lock;
     long long expiration;
     struct ovs_list exp_node;
     struct cmap_node cm_node;
     ovs_u128 label;
-    struct nat_action_info_t *nat_info;
-    char *alg;
-    struct conn *nat_conn;
-    int seq_skew;
+    struct conn_ext_nat *ext_nat;
+    struct conn_ext_alg *ext_alg;
     uint32_t mark;
     /* See ct_conn_type. */
     uint8_t conn_type;
@@ -106,11 +118,6 @@ struct conn {
      * This field is used to signal an update to the specified list.  The
      * value 'NO_UPD_EXP_LIST' is used to indicate no update to any list. */
     uint8_t exp_list_id;
-    /* TCP sequence skew direction due to NATTing of FTP control messages;
-     * true if reply direction. */
-    bool seq_skew_dir;
-    /* True if alg data connection. */
-    bool alg_related;
     /* Inserted into the cmap; handle theoretical expiry list race; although
      * such a race would probably mean a system meltdown. */
     bool inserted;

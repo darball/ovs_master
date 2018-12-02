@@ -381,7 +381,7 @@ static void
 conn_clean_cmn(struct conn *conn)
     OVS_NO_THREAD_SAFETY_ANALYSIS
 {
-    if (conn->alg) {
+    if (conn->ext_alg && conn->ext_alg->alg) {
         expectation_clean(&conn->key);
     }
 
@@ -399,9 +399,10 @@ conn_clean(struct conn *conn)
     ovs_assert(conn->conn_type == CT_CONN_TYPE_DEFAULT);
 
     conn_clean_cmn(conn);
-    if (conn->nat_conn) {
-        uint32_t hash = conn_key_hash(&conn->nat_conn->key, hash_basis);
-        cmap_remove(&cm_conns, &conn->nat_conn->cm_node, hash);
+    if (conn->ext_nat && conn->ext_nat->nat_conn) {
+        uint32_t hash = conn_key_hash(&conn->ext_nat->nat_conn->key,
+                                      hash_basis);
+        cmap_remove(&cm_conns, &conn->ext_nat->nat_conn->cm_node, hash);
     }
     ovsrcu_postpone(delete_conn, conn);
     atomic_count_dec(&n_conn);
@@ -461,8 +462,8 @@ write_ct_md(struct dp_packet *pkt, uint16_t zone, const struct conn *conn,
 
     /* Use the original direction tuple if we have it. */
     if (conn) {
-        if (conn->alg_related) {
-            key = &conn->master_key;
+        if (conn->ext_alg && conn->ext_alg->alg_related) {
+            key = &conn->ext_alg->master_key;
         } else {
             key = &conn->key;
         }
@@ -576,7 +577,8 @@ handle_alg_ctl(const struct conn_lookup_ctx *ctx, struct dp_packet *pkt,
                long long now, bool nat)
 {
     /* ALG control packet handling with expectation creation. */
-    if (OVS_UNLIKELY(alg_helpers[ct_alg_ctl] && conn && conn->alg)) {
+    if (OVS_UNLIKELY(alg_helpers[ct_alg_ctl] && conn && conn->ext_alg &&
+                     conn->ext_alg->alg)) {
         ovs_mutex_lock(&conn->lock.lock);
         alg_helpers[ct_alg_ctl](ctx, pkt, conn, now, CT_FTP_CTL_INTEREST,
                                 nat);
@@ -587,7 +589,7 @@ handle_alg_ctl(const struct conn_lookup_ctx *ctx, struct dp_packet *pkt,
 static void
 pat_packet(struct dp_packet *pkt, const struct conn *conn)
 {
-    if (conn->nat_info->nat_action & NAT_ACTION_SRC) {
+    if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_SRC) {
         if (conn->key.nw_proto == IPPROTO_TCP) {
             struct tcp_header *th = dp_packet_l4(pkt);
             packet_set_tcp_port(pkt, conn->rev_key.dst.port, th->tcp_dst);
@@ -595,7 +597,7 @@ pat_packet(struct dp_packet *pkt, const struct conn *conn)
             struct udp_header *uh = dp_packet_l4(pkt);
             packet_set_udp_port(pkt, conn->rev_key.dst.port, uh->udp_dst);
         }
-    } else if (conn->nat_info->nat_action & NAT_ACTION_DST) {
+    } else if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_DST) {
         if (conn->key.nw_proto == IPPROTO_TCP) {
             struct tcp_header *th = dp_packet_l4(pkt);
             packet_set_tcp_port(pkt, th->tcp_src, conn->rev_key.src.port);
@@ -609,7 +611,7 @@ pat_packet(struct dp_packet *pkt, const struct conn *conn)
 static void
 nat_packet(struct dp_packet *pkt, const struct conn *conn, bool related)
 {
-    if (conn->nat_info->nat_action & NAT_ACTION_SRC) {
+    if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_SRC) {
         pkt->md.ct_state |= CS_SRC_NAT;
         if (conn->key.dl_type == htons(ETH_TYPE_IP)) {
             struct ip_header *nh = dp_packet_l3(pkt);
@@ -625,7 +627,7 @@ nat_packet(struct dp_packet *pkt, const struct conn *conn, bool related)
         if (!related) {
             pat_packet(pkt, conn);
         }
-    } else if (conn->nat_info->nat_action & NAT_ACTION_DST) {
+    } else if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_DST) {
         pkt->md.ct_state |= CS_DST_NAT;
         if (conn->key.dl_type == htons(ETH_TYPE_IP)) {
             struct ip_header *nh = dp_packet_l3(pkt);
@@ -647,7 +649,7 @@ nat_packet(struct dp_packet *pkt, const struct conn *conn, bool related)
 static void
 un_pat_packet(struct dp_packet *pkt, const struct conn *conn)
 {
-    if (conn->nat_info->nat_action & NAT_ACTION_SRC) {
+    if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_SRC) {
         if (conn->key.nw_proto == IPPROTO_TCP) {
             struct tcp_header *th = dp_packet_l4(pkt);
             packet_set_tcp_port(pkt, th->tcp_src, conn->key.src.port);
@@ -655,7 +657,7 @@ un_pat_packet(struct dp_packet *pkt, const struct conn *conn)
             struct udp_header *uh = dp_packet_l4(pkt);
             packet_set_udp_port(pkt, uh->udp_src, conn->key.src.port);
         }
-    } else if (conn->nat_info->nat_action & NAT_ACTION_DST) {
+    } else if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_DST) {
         if (conn->key.nw_proto == IPPROTO_TCP) {
             struct tcp_header *th = dp_packet_l4(pkt);
             packet_set_tcp_port(pkt, conn->key.dst.port, th->tcp_dst);
@@ -669,7 +671,7 @@ un_pat_packet(struct dp_packet *pkt, const struct conn *conn)
 static void
 reverse_pat_packet(struct dp_packet *pkt, const struct conn *conn)
 {
-    if (conn->nat_info->nat_action & NAT_ACTION_SRC) {
+    if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_SRC) {
         if (conn->key.nw_proto == IPPROTO_TCP) {
             struct tcp_header *th_in = dp_packet_l4(pkt);
             packet_set_tcp_port(pkt, conn->key.src.port,
@@ -679,7 +681,7 @@ reverse_pat_packet(struct dp_packet *pkt, const struct conn *conn)
             packet_set_udp_port(pkt, conn->key.src.port,
                                 uh_in->udp_dst);
         }
-    } else if (conn->nat_info->nat_action & NAT_ACTION_DST) {
+    } else if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_DST) {
         if (conn->key.nw_proto == IPPROTO_TCP) {
             struct tcp_header *th_in = dp_packet_l4(pkt);
             packet_set_tcp_port(pkt, th_in->tcp_src,
@@ -711,10 +713,10 @@ reverse_nat_packet(struct dp_packet *pkt, const struct conn *conn)
         pkt->l3_ofs += (char *) inner_l3 - (char *) nh;
         pkt->l4_ofs += inner_l4 - (char *) icmp;
 
-        if (conn->nat_info->nat_action & NAT_ACTION_SRC) {
+        if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_SRC) {
             packet_set_ipv4_addr(pkt, &inner_l3->ip_src,
                                  conn->key.src.addr.ipv4_aligned);
-        } else if (conn->nat_info->nat_action & NAT_ACTION_DST) {
+        } else if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_DST) {
             packet_set_ipv4_addr(pkt, &inner_l3->ip_dst,
                                  conn->key.dst.addr.ipv4_aligned);
         }
@@ -733,12 +735,12 @@ reverse_nat_packet(struct dp_packet *pkt, const struct conn *conn)
         pkt->l3_ofs += (char *) inner_l3_6 - (char *) nh6;
         pkt->l4_ofs += inner_l4 - (char *) icmp6;
 
-        if (conn->nat_info->nat_action & NAT_ACTION_SRC) {
+        if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_SRC) {
             packet_set_ipv6_addr(pkt, conn->key.nw_proto,
                                  inner_l3_6->ip6_src.be32,
                                  &conn->key.src.addr.ipv6_aligned,
                                  true);
-        } else if (conn->nat_info->nat_action & NAT_ACTION_DST) {
+        } else if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_DST) {
             packet_set_ipv6_addr(pkt, conn->key.nw_proto,
                                  inner_l3_6->ip6_dst.be32,
                                  &conn->key.dst.addr.ipv6_aligned,
@@ -758,7 +760,7 @@ static void
 un_nat_packet(struct dp_packet *pkt, const struct conn *conn,
               bool related)
 {
-    if (conn->nat_info->nat_action & NAT_ACTION_SRC) {
+    if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_SRC) {
         pkt->md.ct_state |= CS_DST_NAT;
         if (conn->key.dl_type == htons(ETH_TYPE_IP)) {
             struct ip_header *nh = dp_packet_l3(pkt);
@@ -776,7 +778,7 @@ un_nat_packet(struct dp_packet *pkt, const struct conn *conn,
         } else {
             un_pat_packet(pkt, conn);
         }
-    } else if (conn->nat_info->nat_action & NAT_ACTION_DST) {
+    } else if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_DST) {
         pkt->md.ct_state |= CS_SRC_NAT;
         if (conn->key.dl_type == htons(ETH_TYPE_IP)) {
             struct ip_header *nh = dp_packet_l3(pkt);
@@ -807,8 +809,8 @@ conn_seq_skew_set(const struct conn_key *key, long long now, int seq_skew,
     conn_key_lookup(key, hash, now, &conn, &reply);
 
     if (conn && seq_skew) {
-        conn->seq_skew = seq_skew;
-        conn->seq_skew_dir = seq_skew_dir;
+        conn->ext_alg->seq_skew = seq_skew;
+        conn->ext_alg->seq_skew_dir = seq_skew_dir;
     }
 }
 
@@ -867,29 +869,38 @@ conn_not_found(struct dp_packet *pkt, struct conn_lookup_ctx *ctx,
         nc->rev_key = nc->key;
         conn_key_reverse(&nc->rev_key);
 
-        if (ct_verify_helper(helper, ct_alg_ctl)) {
-            nc->alg = nullable_xstrdup(helper);
-        }
-
-        if (alg_exp) {
-            nc->alg_related = true;
-            nc->mark = alg_exp->master_mark;
-            nc->label = alg_exp->master_label;
-            nc->master_key = alg_exp->master_key;
+        if (alg_exp || helper || ct_alg_ctl != CT_ALG_CTL_NONE) {
+            nc->ext_alg = xzalloc(sizeof *nc->ext_alg);
         }
 
         if (nat_action_info) {
-            nc->nat_info = xmemdup(nat_action_info, sizeof *nc->nat_info);
+            nc->ext_nat = xzalloc(sizeof *nc->ext_nat);
+        }
+
+        if (nc->ext_alg && ct_verify_helper(helper, ct_alg_ctl)) {
+            nc->ext_alg->alg = nullable_xstrdup(helper);
+        }
+
+        if (alg_exp) {
+            nc->ext_alg->alg_related = true;
+            nc->mark = alg_exp->master_mark;
+            nc->label = alg_exp->master_label;
+            nc->ext_alg->master_key = alg_exp->master_key;
+        }
+
+        if (nat_action_info) {
+            nc->ext_nat->nat_info = xmemdup(nat_action_info,
+                                        sizeof *nc->ext_nat->nat_info);
 
             nat_conn = xzalloc(sizeof *nat_conn);
 
             if (alg_exp) {
                 if (alg_exp->nat_rpl_dst) {
                     nc->rev_key.dst.addr = alg_exp->alg_nat_repl_addr;
-                    nc->nat_info->nat_action = NAT_ACTION_SRC;
+                    nc->ext_nat->nat_info->nat_action = NAT_ACTION_SRC;
                 } else {
                     nc->rev_key.src.addr = alg_exp->alg_nat_repl_addr;
-                    nc->nat_info->nat_action = NAT_ACTION_DST;
+                    nc->ext_nat->nat_info->nat_action = NAT_ACTION_DST;
                 }
                 *nat_conn = *nc;
             } else {
@@ -903,20 +914,19 @@ conn_not_found(struct dp_packet *pkt, struct conn_lookup_ctx *ctx,
                 /* Update nc with nat adjustments. */
                 *nc = *nat_conn;
             }
+            nc->ext_nat->nat_conn = nat_conn;
             nat_packet(pkt, nc, ctx->icmp_related);
 
             nat_conn->key = nc->rev_key;
             nat_conn->rev_key = nc->key;
             nat_conn->conn_type = CT_CONN_TYPE_UN_NAT;
-            nat_conn->nat_info = NULL;
-            nat_conn->alg = NULL;
-            nat_conn->nat_conn = NULL;
+            nat_conn->ext_nat = NULL;
+            nat_conn->ext_alg = NULL;
             uint32_t nat_hash = conn_key_hash(&nat_conn->key,
                                               hash_basis);
             cmap_insert(&cm_conns, &nat_conn->cm_node, nat_hash);
         }
 
-        nc->nat_conn = nat_conn;
         ovs_mutex_init_adaptive(&nc->lock.lock);
         nc->conn_type = CT_CONN_TYPE_DEFAULT;
         cmap_insert(&cm_conns, &nc->cm_node, ctx->hash);
@@ -955,7 +965,7 @@ conn_update_state(struct dp_packet *pkt, struct conn_lookup_ctx *ctx,
             pkt->md.ct_state |= CS_REPLY_DIR;
         }
     } else {
-        if (conn->alg_related) {
+        if (conn->ext_alg && conn->ext_alg->alg_related) {
             pkt->md.ct_state |= CS_RELATED;
         }
 
@@ -989,7 +999,7 @@ static void
 handle_nat(struct dp_packet *pkt, struct conn *conn,
            uint16_t zone, bool reply, bool related)
 {
-    if (conn->nat_info &&
+    if (conn->ext_nat && conn->ext_nat->nat_info &&
         (!(pkt->md.ct_state & (CS_SRC_NAT | CS_DST_NAT)) ||
           (pkt->md.ct_state & (CS_SRC_NAT | CS_DST_NAT) &&
            zone != pkt->md.ct_zone))) {
@@ -1074,7 +1084,7 @@ conn_update_state_alg(struct dp_packet *pkt, struct conn_lookup_ctx *ctx,
         /* Keep sequence tracking in sync with the source of the
          * sequence skew. */
         ovs_mutex_lock(&conn->lock.lock);
-        if (ctx->reply != conn->seq_skew_dir) {
+        if (ctx->reply != conn->ext_alg->seq_skew_dir) {
             handle_ftp_ctl(ctx, pkt, conn, now, CT_FTP_CTL_OTHER,
                            !!nat_action_info);
             /* conn_update_state locks for unrelated fields, so unlock. */
@@ -1237,7 +1247,7 @@ conntrack_clear(struct dp_packet *packet)
 static void
 set_mark(struct dp_packet *pkt, struct conn *conn, uint32_t val, uint32_t mask)
 {
-    if (conn->alg_related) {
+    if (conn->ext_alg && conn->ext_alg->alg_related) {
         pkt->md.ct_mark = conn->mark;
     } else {
         pkt->md.ct_mark = val | (pkt->md.ct_mark & ~(mask));
@@ -1250,7 +1260,7 @@ set_label(struct dp_packet *pkt, struct conn *conn,
           const struct ovs_key_ct_labels *val,
           const struct ovs_key_ct_labels *mask)
 {
-    if (conn->alg_related) {
+    if (conn->ext_alg && conn->ext_alg->alg_related) {
         pkt->md.ct_label = conn->label;
     } else {
         ovs_u128 v, m;
@@ -1973,11 +1983,11 @@ nat_range_hash(const struct conn *conn, uint32_t basis)
 {
     uint32_t hash = basis;
 
-    hash = ct_addr_hash_add(hash, &conn->nat_info->min_addr);
-    hash = ct_addr_hash_add(hash, &conn->nat_info->max_addr);
+    hash = ct_addr_hash_add(hash, &conn->ext_nat->nat_info->min_addr);
+    hash = ct_addr_hash_add(hash, &conn->ext_nat->nat_info->max_addr);
     hash = hash_add(hash,
-                    (conn->nat_info->max_port << 16)
-                    | conn->nat_info->min_port);
+                    (conn->ext_nat->nat_info->max_port << 16)
+                    | conn->ext_nat->nat_info->min_port);
     hash = ct_endpoint_hash_add(hash, &conn->key.src);
     hash = ct_endpoint_hash_add(hash, &conn->key.dst);
     hash = hash_add(hash, (OVS_FORCE uint32_t) conn->key.dl_type);
@@ -2001,22 +2011,24 @@ nat_select_range_tuple(const struct conn *conn, struct conn *nat_conn)
     uint16_t first_port;
     uint32_t hash = nat_range_hash(conn, hash_basis);
 
-    if ((conn->nat_info->nat_action & NAT_ACTION_SRC) &&
-        (!(conn->nat_info->nat_action & NAT_ACTION_SRC_PORT))) {
+    if ((conn->ext_nat->nat_info->nat_action & NAT_ACTION_SRC) &&
+        (!(conn->ext_nat->nat_info->nat_action & NAT_ACTION_SRC_PORT))) {
         min_port = ntohs(conn->key.src.port);
         max_port = ntohs(conn->key.src.port);
         first_port = min_port;
-    } else if ((conn->nat_info->nat_action & NAT_ACTION_DST) &&
-               (!(conn->nat_info->nat_action & NAT_ACTION_DST_PORT))) {
+    } else if ((conn->ext_nat->nat_info->nat_action & NAT_ACTION_DST) &&
+               (!(conn->ext_nat->nat_info->nat_action
+                  & NAT_ACTION_DST_PORT))) {
         min_port = ntohs(conn->key.dst.port);
         max_port = ntohs(conn->key.dst.port);
         first_port = min_port;
     } else {
-        uint16_t deltap = conn->nat_info->max_port - conn->nat_info->min_port;
+        uint16_t deltap = conn->ext_nat->nat_info->max_port -
+            conn->ext_nat->nat_info->min_port;
         uint32_t port_index = hash % (deltap + 1);
-        first_port = conn->nat_info->min_port + port_index;
-        min_port = conn->nat_info->min_port;
-        max_port = conn->nat_info->max_port;
+        first_port = conn->ext_nat->nat_info->min_port + port_index;
+        min_port = conn->ext_nat->nat_info->min_port;
+        max_port = conn->ext_nat->nat_info->max_port;
     }
 
     uint32_t deltaa = 0;
@@ -2025,37 +2037,39 @@ nat_select_range_tuple(const struct conn *conn, struct conn *nat_conn)
     memset(&ct_addr, 0, sizeof ct_addr);
     struct ct_addr max_ct_addr;
     memset(&max_ct_addr, 0, sizeof max_ct_addr);
-    max_ct_addr = conn->nat_info->max_addr;
+    max_ct_addr = conn->ext_nat->nat_info->max_addr;
 
     if (conn->key.dl_type == htons(ETH_TYPE_IP)) {
-        deltaa = ntohl(conn->nat_info->max_addr.ipv4_aligned) -
-                 ntohl(conn->nat_info->min_addr.ipv4_aligned);
+        deltaa = ntohl(conn->ext_nat->nat_info->max_addr.ipv4_aligned) -
+                       ntohl(conn->ext_nat->nat_info->min_addr.ipv4_aligned);
         address_index = hash % (deltaa + 1);
         ct_addr.ipv4_aligned = htonl(
-            ntohl(conn->nat_info->min_addr.ipv4_aligned) + address_index);
+            ntohl(conn->ext_nat->nat_info->min_addr.ipv4_aligned) +
+                  address_index);
     } else {
-        deltaa = nat_ipv6_addrs_delta(&conn->nat_info->min_addr.ipv6_aligned,
-                                      &conn->nat_info->max_addr.ipv6_aligned);
+        deltaa = nat_ipv6_addrs_delta(
+                     &conn->ext_nat->nat_info->min_addr.ipv6_aligned,
+                     &conn->ext_nat->nat_info->max_addr.ipv6_aligned);
         /* deltaa must be within 32 bits for full hash coverage. A 64 or
          * 128 bit hash is unnecessary and hence not used here. Most code
          * is kept common with V4; nat_ipv6_addrs_delta() will do the
          * enforcement via max_ct_addr. */
-        max_ct_addr = conn->nat_info->min_addr;
+        max_ct_addr = conn->ext_nat->nat_info->min_addr;
         nat_ipv6_addr_increment(&max_ct_addr.ipv6_aligned, deltaa);
         address_index = hash % (deltaa + 1);
-        ct_addr.ipv6_aligned = conn->nat_info->min_addr.ipv6_aligned;
+        ct_addr.ipv6_aligned = conn->ext_nat->nat_info->min_addr.ipv6_aligned;
         nat_ipv6_addr_increment(&ct_addr.ipv6_aligned, address_index);
     }
 
     uint16_t port = first_port;
     bool all_ports_tried = false;
     /* For DNAT, we don't use ephemeral ports. */
-    bool ephemeral_ports_tried = conn->nat_info->nat_action & NAT_ACTION_DST
-                                 ? true : false;
+    bool ephemeral_ports_tried =
+        conn->ext_nat->nat_info->nat_action & NAT_ACTION_DST ? true : false;
     struct ct_addr first_addr = ct_addr;
 
     while (true) {
-        if (conn->nat_info->nat_action & NAT_ACTION_SRC) {
+        if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_SRC) {
             nat_conn->rev_key.dst.addr = ct_addr;
         } else {
             nat_conn->rev_key.src.addr = ct_addr;
@@ -2064,7 +2078,7 @@ nat_select_range_tuple(const struct conn *conn, struct conn *nat_conn)
         if ((conn->key.nw_proto == IPPROTO_ICMP) ||
             (conn->key.nw_proto == IPPROTO_ICMPV6)) {
             all_ports_tried = true;
-        } else if (conn->nat_info->nat_action & NAT_ACTION_SRC) {
+        } else if (conn->ext_nat->nat_info->nat_action & NAT_ACTION_SRC) {
             nat_conn->rev_key.dst.port = htons(port);
         } else {
             nat_conn->rev_key.src.port = htons(port);
@@ -2096,14 +2110,14 @@ nat_select_range_tuple(const struct conn *conn, struct conn *nat_conn)
                     nat_ipv6_addr_increment(&ct_addr.ipv6_aligned, 1);
                 }
             } else {
-                ct_addr = conn->nat_info->min_addr;
+                ct_addr = conn->ext_nat->nat_info->min_addr;
             }
             if (!memcmp(&ct_addr, &first_addr, sizeof ct_addr)) {
                 if (ephemeral_ports_tried) {
                     break;
                 } else {
                     ephemeral_ports_tried = true;
-                    ct_addr = conn->nat_info->min_addr;
+                    ct_addr = conn->ext_nat->nat_info->min_addr;
                     first_addr = ct_addr;
                     min_port = MIN_NAT_EPHEMERAL_PORT;
                     max_port = MAX_NAT_EPHEMERAL_PORT;
@@ -2156,8 +2170,15 @@ conn_update(struct dp_packet *pkt, struct conn *conn,
 static void
 delete_conn_cmn(struct conn *conn)
 {
-    free(conn->nat_info);
-    free(conn->alg);
+    if (conn->ext_nat) {
+        free(conn->ext_nat->nat_info);
+    }
+    free(conn->ext_nat);
+
+    if (conn->ext_alg) {
+        free(conn->ext_alg->alg);
+    }
+    free(conn->ext_alg);
     free(conn);
 }
 
@@ -2166,7 +2187,10 @@ delete_conn(struct conn *conn)
 {
     ovs_assert(conn->conn_type == CT_CONN_TYPE_DEFAULT);
     ovs_mutex_destroy(&conn->lock.lock);
-    free(conn->nat_conn);
+
+    if (conn->ext_nat) {
+        free(conn->ext_nat->nat_conn);
+    }
     delete_conn_cmn(conn);
 }
 
@@ -2291,9 +2315,11 @@ conn_to_ct_dpif_entry(const struct conn *conn, struct ct_dpif_entry *entry,
 
     entry->bkt = bkt;
 
-    if (conn->alg) {
+    if (conn->ext_alg && conn->ext_alg->alg) {
         /* Caller is responsible for freeing. */
-        entry->helper.name = xstrdup(conn->alg);
+        entry->helper.name = xstrdup(conn->ext_alg->alg);
+    } else {
+        entry->helper.name = NULL;
     }
 }
 
@@ -2979,7 +3005,7 @@ handle_ftp_ctl(const struct conn_lookup_ctx *ctx, struct dp_packet *pkt,
         return;
     }
 
-    if (!nat || !conn_for_expectation->seq_skew) {
+    if (!nat || !conn_for_expectation->ext_alg->seq_skew) {
         do_seq_skew_adj = false;
     }
 
@@ -2987,7 +3013,7 @@ handle_ftp_ctl(const struct conn_lookup_ctx *ctx, struct dp_packet *pkt,
     int64_t seq_skew = 0;
 
     if (ftp_ctl == CT_FTP_CTL_OTHER) {
-        seq_skew = conn_for_expectation->seq_skew;
+        seq_skew = conn_for_expectation->ext_alg->seq_skew;
     } else if (ftp_ctl == CT_FTP_CTL_INTEREST) {
         enum ftp_ctl_pkt rc;
         if (ctx->key.dl_type == htons(ETH_TYPE_IPV6)) {
@@ -3042,7 +3068,7 @@ handle_ftp_ctl(const struct conn_lookup_ctx *ctx, struct dp_packet *pkt,
     struct tcp_header *th = dp_packet_l4(pkt);
 
     if (do_seq_skew_adj && seq_skew != 0) {
-        if (ctx->reply != conn_for_expectation->seq_skew_dir) {
+        if (ctx->reply != conn_for_expectation->ext_alg->seq_skew_dir) {
 
             uint32_t tcp_ack = ntohl(get_16aligned_be32(&th->tcp_ack));
 
