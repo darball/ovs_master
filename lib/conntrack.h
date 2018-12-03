@@ -19,6 +19,7 @@
 
 #include <stdbool.h>
 
+#include "cmap.h"
 #include "latch.h"
 #include "odp-netlink.h"
 #include "openvswitch/hmap.h"
@@ -41,10 +42,6 @@
  * Initialization:
  *
  *    conntrack_init();
- *
- * It is necessary to periodically issue a call to
- *
- * to allow the module to clean up expired connections.
  *
  * To send a group of packets through the connection tracker:
  *
@@ -95,7 +92,7 @@ void conntrack_clear(struct dp_packet *packet);
 
 struct conntrack_dump {
     unsigned bucket;
-    struct hmap_position bucket_pos;
+    struct cmap_position cm_pos;
     bool filter_zone;
     uint16_t zone;
 };
@@ -112,8 +109,6 @@ int conntrack_flush_tuple(const struct ct_dpif_tuple *, uint16_t zone);
 int conntrack_set_maxconns(uint32_t maxconns);
 int conntrack_get_maxconns(uint32_t *maxconns);
 int conntrack_get_nconns(uint32_t *nconns);
-
-
 
 
 #endif /* conntrack.h */
