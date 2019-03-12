@@ -250,22 +250,6 @@ conn_key_cmp(const struct conn_key *key1, const struct conn_key *key2)
     return 1;
 }
 
-static bool
-conn_key_present(struct conntrack *ct, struct conntrack_bucket *ctb,
-                 const struct conn_key *key)
-    OVS_REQUIRES(ctb->lock)
-{
-    struct conn *conn;
-    uint32_t hash = conn_key_hash(key, ct->hash_basis);
-
-    HMAP_FOR_EACH_WITH_HASH (conn, node, hash, &ctb->connections) {
-        if (!conn_key_cmp(&conn->key, key)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static void
 ct_print_conn_info(const struct conn *c, const char *log_msg,
                    enum vlog_level vll, bool force, bool rl_on)
@@ -754,6 +738,22 @@ un_nat_packet(struct dp_packet *pkt, const struct conn *conn,
     }
 }
 
+/* Typical usage of this helper is in non per-packet code;
+ * this is because the bucket lock needs to be held for lookup
+ * and a hash would have already been needed. Hence, this function
+ * is just intended for code clarity. */
+static struct conn *
+conn_lookup(struct conntrack *ct, const struct conn_key *key, long long now)
+{
+    struct conn_lookup_ctx ctx;
+    ctx.conn = NULL;
+    ctx.key = *key;
+    ctx.hash = conn_key_hash(key, ct->hash_basis);
+    unsigned bucket = hash_to_bucket(ctx.hash);
+    conn_key_lookup(&ct->buckets[bucket], &ctx, now);
+    return ctx.conn;
+}
+
 /* This function is called with the bucket lock held. */
 static struct conn *
 conn_lookup_any(const struct conn_key *key,
@@ -792,15 +792,9 @@ static void
 conn_seq_skew_set(struct conntrack *ct, const struct conn_key *key,
                   long long now, int seq_skew, bool seq_skew_dir)
 {
-    uint32_t hash = conn_key_hash(key, ct->hash_basis);
-    unsigned bucket = hash_to_bucket(hash);
+    unsigned bucket = hash_to_bucket(conn_key_hash(key, ct->hash_basis));
     ct_lock_lock(&ct->buckets[bucket].lock);
-    struct conn_lookup_ctx ctx;
-    ctx.key = *key;
-    ctx.hash = hash;
-    conn_key_lookup(&ct->buckets[bucket], &ctx, now);
-    struct conn *conn = ctx.conn;
-
+    struct conn *conn = conn_lookup(ct, key, now);
     if (conn && seq_skew) {
         conn->seq_skew = seq_skew;
         conn->seq_skew_dir = seq_skew_dir;
@@ -849,13 +843,6 @@ conn_clean(struct conntrack *ct, struct conn *conn,
            struct conntrack_bucket *ctb)
     OVS_REQUIRES(ctb->lock)
 {
-    if (!conn_key_present(ct, ctb, &conn->key)) {
-        char *log_msg = xasprintf("conn_clean: conn not present in hmap");
-         ct_print_conn_info(conn, log_msg, VLL_WARN, true, false);
-         free(log_msg);
-         return;
-    }
-
     if (conn->alg) {
         expectation_clean(ct, &conn->key, ct->hash_basis);
     }
@@ -867,6 +854,20 @@ conn_clean(struct conntrack *ct, struct conn *conn,
     } else {
         delete_conn(conn);
     }
+}
+
+static void
+conn_clean_safe(struct conntrack *ct, struct conn *conn,
+                struct conntrack_bucket *ctb, uint32_t hash)
+{
+    ovs_mutex_lock(&ctb->cleanup_mutex);
+    ct_lock_lock(&ctb->lock);
+    conn = conn_lookup_any(&conn->key, ctb, hash);
+    if (conn) {
+        conn_clean(ct, conn, ctb);
+    }
+    ct_lock_unlock(&ctb->lock);
+    ovs_mutex_unlock(&ctb->cleanup_mutex);
 }
 
 static bool
@@ -958,8 +959,8 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                 if (!new_insert) {
                     char *log_msg = xasprintf("Pre-existing alg "
                                               "nat_conn_key");
-                    ct_print_conn_info(conn_for_un_nat_copy, log_msg,
-                                       VLL_INFO, true, false);
+                    ct_print_conn_info(conn_for_un_nat_copy, log_msg, VLL_INFO,
+                                       true, false);
                     free(log_msg);
                 }
             } else {
@@ -1016,7 +1017,6 @@ conn_update_state(struct conntrack *ct, struct dp_packet *pkt,
 {
     bool create_new_conn = false;
     struct conn lconn;
-    struct conn *conn_;
 
     if (ctx->icmp_related) {
         pkt->md.ct_state |= CS_RELATED;
@@ -1045,18 +1045,7 @@ conn_update_state(struct conntrack *ct, struct dp_packet *pkt,
         case CT_UPDATE_NEW:
             memcpy(&lconn, *conn, sizeof lconn);
             ct_lock_unlock(&ct->buckets[bucket].lock);
-
-            ovs_mutex_lock(&ct->buckets[bucket].cleanup_mutex);
-            ct_lock_lock(&ct->buckets[bucket].lock);
-            uint32_t hash = conn_key_hash(&lconn.key, ct->hash_basis);
-            conn_ = conn_lookup_any(&lconn.key,
-                                     &ct->buckets[bucket], hash);
-            if (conn_) {
-                conn_clean(ct, conn_, &ct->buckets[bucket]);
-            }
-            ct_lock_unlock(&ct->buckets[bucket].lock);
-            ovs_mutex_unlock(&ct->buckets[bucket].cleanup_mutex);
-
+            conn_clean_safe(ct, &lconn, &ct->buckets[bucket], ctx->hash);
             ct_lock_lock(&ct->buckets[bucket].lock);
             create_new_conn = true;
             break;
@@ -1069,7 +1058,7 @@ conn_update_state(struct conntrack *ct, struct dp_packet *pkt,
 
 static void
 create_un_nat_conn(struct conntrack *ct, struct conn *conn_for_un_nat_copy,
-                   bool alg_un_nat)
+                   long long now, bool alg_un_nat)
 {
     struct conn *nc = xmemdup(conn_for_un_nat_copy, sizeof *nc);
     nc->key = conn_for_un_nat_copy->rev_key;
@@ -1077,9 +1066,7 @@ create_un_nat_conn(struct conntrack *ct, struct conn *conn_for_un_nat_copy,
     uint32_t un_nat_hash = conn_key_hash(&nc->key, ct->hash_basis);
     unsigned un_nat_conn_bucket = hash_to_bucket(un_nat_hash);
     ct_lock_lock(&ct->buckets[un_nat_conn_bucket].lock);
-    struct conn *rev_conn = conn_lookup_any(&nc->key,
-                                            &ct->buckets[un_nat_conn_bucket],
-                                            un_nat_hash);
+    struct conn *rev_conn = conn_lookup(ct, &nc->key, now);
 
     if (alg_un_nat) {
         if (!rev_conn) {
@@ -1088,7 +1075,7 @@ create_un_nat_conn(struct conntrack *ct, struct conn *conn_for_un_nat_copy,
         } else {
             char *log_msg = xasprintf("Unusual condition for un_nat conn "
                                       "create for alg: rev_conn %p", rev_conn);
-            ct_print_conn_info(nc, log_msg, VLL_WARN, true, false);
+            ct_print_conn_info(nc, log_msg, VLL_INFO, true, false);
             free(log_msg);
             free(nc);
         }
@@ -1096,26 +1083,16 @@ create_un_nat_conn(struct conntrack *ct, struct conn *conn_for_un_nat_copy,
         ct_rwlock_rdlock(&ct->resources_lock);
 
         struct nat_conn_key_node *nat_conn_key_node =
-           nat_conn_keys_lookup(&ct->nat_conn_keys, &nc->key, ct->hash_basis);
+            nat_conn_keys_lookup(&ct->nat_conn_keys, &nc->key, ct->hash_basis);
         if (nat_conn_key_node && !conn_key_cmp(&nat_conn_key_node->value,
-                                               &nc->rev_key)) {
-            if (!rev_conn) {
-                hmap_insert(&ct->buckets[un_nat_conn_bucket].connections,
-                            &nc->node, un_nat_hash);
-            } else {
-                char *log_msg = xasprintf("NAT conflict; un-nat will not"
-                                          "happen; likely DOS");
-                ct_print_conn_info(nc, log_msg, VLL_WARN, true, false);
-                free(log_msg);
-                nat_conn_keys_remove(&ct->nat_conn_keys, &nc->key,
-                                     ct->hash_basis);
-                free(nc);
-            }
+            &nc->rev_key) && !rev_conn) {
+            hmap_insert(&ct->buckets[un_nat_conn_bucket].connections,
+                        &nc->node, un_nat_hash);
         } else {
             char *log_msg = xasprintf("Unusual condition for un_nat conn "
                                       "create: nat_conn_key_node/rev_conn "
-                                      "%p", nat_conn_key_node);
-            ct_print_conn_info(nc, log_msg, VLL_WARN, true, false);
+                                      "%p/%p", nat_conn_key_node, rev_conn);
+            ct_print_conn_info(nc, log_msg, VLL_INFO, true, false);
             free(log_msg);
             free(nc);
         }
@@ -1258,22 +1235,11 @@ process_one(struct conntrack *ct, struct dp_packet *pkt,
     conn = ctx->conn;
 
     /* Delete found entry if in wrong direction. 'force' implies commit. */
-    if (conn && force && ctx->reply) {
+    if (OVS_LIKELY(force && ctx->reply && conn)) {
         struct conn lconn;
-        struct conn *conn_;
         memcpy(&lconn, conn, sizeof lconn);
         ct_lock_unlock(&ct->buckets[bucket].lock);
-        ovs_mutex_lock(&ct->buckets[bucket].cleanup_mutex);
-        ct_lock_lock(&ct->buckets[bucket].lock);
-
-        conn_ = conn_lookup_any(&lconn.key,
-                                 &ct->buckets[bucket], ctx->hash);
-        if (conn_) {
-            conn_clean(ct, conn_, &ct->buckets[bucket]);
-        }
-
-        ct_lock_unlock(&ct->buckets[bucket].lock);
-        ovs_mutex_unlock(&ct->buckets[bucket].cleanup_mutex);
+        conn_clean_safe(ct, &lconn, &ct->buckets[bucket], ctx->hash);
         ct_lock_lock(&ct->buckets[bucket].lock);
         conn = NULL;
     }
@@ -1377,7 +1343,7 @@ process_one(struct conntrack *ct, struct dp_packet *pkt,
     ct_lock_unlock(&ct->buckets[bucket].lock);
 
     if (is_un_nat_conn_valid(&conn_for_un_nat_copy)) {
-        create_un_nat_conn(ct, &conn_for_un_nat_copy, !!alg_exp);
+        create_un_nat_conn(ct, &conn_for_un_nat_copy, now, !!alg_exp);
     }
 
     handle_alg_ctl(ct, ctx, pkt, ct_alg_ctl, conn, now, !!nat_action_info,
@@ -1474,7 +1440,6 @@ sweep_bucket(struct conntrack *ct, struct conntrack_bucket *ctb,
 
     for (unsigned i = 0; i < N_CT_TM; i++) {
         LIST_FOR_EACH_SAFE (conn, next, exp_node, &ctb->exp_lists[i]) {
-            ovs_assert(conn->conn_type == CT_CONN_TYPE_DEFAULT);
             if (!conn_expired(conn, now) || count >= limit) {
                 min_expiration = MIN(min_expiration, conn->expiration);
                 if (count >= limit) {
@@ -2637,7 +2602,6 @@ conntrack_flush(struct conntrack *ct, const uint16_t *zone)
             struct conn *conn, *next;
             LIST_FOR_EACH_SAFE (conn, next, exp_node, &ctb->exp_lists[j]) {
                 if (!zone || *zone == conn->key.zone) {
-                    ovs_assert(conn->conn_type == CT_CONN_TYPE_DEFAULT);
                     conn_clean(ct, conn, ctb);
                 }
             }
