@@ -73,8 +73,49 @@ static bool multithreaded;
         } \
         l->where = where; \
  }
+
+#define LOCK_FUNCTION_TIMED(TYPE, FUN) \
+    void \
+    ovs_##TYPE##_##FUN##_at(const struct ovs_##TYPE *l_, \
+                            const char *where) \
+        OVS_NO_THREAD_SAFETY_ANALYSIS \
+    { \
+        struct ovs_##TYPE *l = CONST_CAST(struct ovs_##TYPE *, l_); \
+        int error; \
+ \
+        /* Verify that 'l' was initialized. */ \
+        if (OVS_UNLIKELY(!l->where)) { \
+            ovs_abort(0, "%s: %s() passed uninitialized ovs_"#TYPE, \
+                      where, __func__); \
+        } \
+ \
+        error = pthread_##TYPE##_try##FUN(&l->lock); \
+        if (OVS_UNLIKELY(error == EBUSY)) { \
+            struct timespec ts; \
+            for (;;) { \
+                clock_gettime(CLOCK_REALTIME, &ts); \
+                ts.tv_sec++; \
+                error = pthread_##TYPE##_timed##FUN(&l->lock, &ts); \
+                if (error == 0) { \
+                    break; \
+                } else if (error != ETIMEDOUT || error != EAGAIN) { \
+                    ovs_abort(error, "%s: pthread_%stimed%s failed", \
+                              where, #TYPE, #FUN); \
+                } \
+            } \
+        } else if (OVS_UNLIKELY(error)) { \
+            ovs_abort(error, "%s: pthread_%stry_%s failed", \
+                      where, #TYPE, #FUN); \
+        } \
+        l->where = where; \
+ }
+
 LOCK_FUNCTION(mutex, lock);
+#ifndef __WIN32
+LOCK_FUNCTION_TIMED(rwlock, rdlock);
+#else
 LOCK_FUNCTION(rwlock, rdlock);
+#endif
 LOCK_FUNCTION(rwlock, wrlock);
 
 #define TRY_LOCK_FUNCTION(TYPE, FUN) \
