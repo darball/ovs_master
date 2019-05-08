@@ -2558,6 +2558,7 @@ conntrack_dump_done(struct conntrack_dump *dump OVS_UNUSED)
 
 int
 conntrack_flush(struct conntrack *ct, const uint16_t *zone)
+    OVS_NO_THREAD_SAFETY_ANALYSIS
 {
     for (unsigned i = 0; i < CONNTRACK_BUCKETS; i++) {
         struct conntrack_bucket *ctb = &ct->buckets[i];
@@ -2571,7 +2572,7 @@ conntrack_flush(struct conntrack *ct, const uint16_t *zone)
                 }
             }
         }
-        ct_lock_unlock(&ct->buckets[i].lock);
+        ct_lock_unlock(&ctb->lock);
         ovs_mutex_unlock(&ctb->cleanup_mutex);
     }
 
