@@ -2822,11 +2822,10 @@ dpif_netlink_ct_dump_done(struct dpif *dpif OVS_UNUSED,
                           struct ct_dpif_dump_state *dump_)
 {
     struct dpif_netlink_ct_dump_state *dump;
-    int err;
 
     INIT_CONTAINER(dump, dump_, up);
 
-    err = nl_ct_dump_done(dump->nl_ct_dump);
+    int err = nl_ct_dump_done(dump->nl_ct_dump);
     free(dump);
     return err;
 }
@@ -3319,7 +3318,8 @@ out:
 }
 
 /* Returns 0 if all the sub timeout policies are deleted or
- * not exist in the kernel. */
+ * not exist in the kernel; returns 1 if any sub timeout policy deletion
+ * failed. */
 static int
 dpif_netlink_ct_del_timeout_policy(struct dpif *dpif OVS_UNUSED,
                                    uint32_t tp_id)
@@ -3330,18 +3330,19 @@ dpif_netlink_ct_del_timeout_policy(struct dpif *dpif OVS_UNUSED,
     for (int i = 0; i < ARRAY_SIZE(tp_protos); ++i) {
         dpif_netlink_format_tp_name(tp_id, tp_protos[i].l3num,
                                     tp_protos[i].l4num, &nl_tp_name);
-        err = nl_ct_del_timeout_policy(ds_cstr(&nl_tp_name));
-        if (err == ENOENT) {
-            err = 0;
+        int err2 = nl_ct_del_timeout_policy(ds_cstr(&nl_tp_name));
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(6, 6);
+        VLOG_INFO_RL(&rl, err2 == ENOENT
+                     ? "timeout policy already removed %s (%s)"
+                     : !err2 ? "deleted timeout policy %s (%s)"
+                             : "failed to delete timeout policy %s (%s)",
+                     ds_cstr(&nl_tp_name), ovs_strerror(err2));
+        if (err2 == ENOENT) {
+            err2 = 0;
         }
-        if (err) {
-            VLOG_WARN_RL(&error_rl, "failed to delete timeout policy %s (%s)",
-                         ds_cstr(&nl_tp_name), ovs_strerror(err));
-            goto out;
-        }
+        err = err || err2;
     }
 
-out:
     ds_destroy(&nl_tp_name);
     return err;
 }
@@ -3392,10 +3393,9 @@ dpif_netlink_ct_timeout_policy_dump_start(struct dpif *dpif OVS_UNUSED,
                                           void **statep)
 {
     struct dpif_netlink_ct_timeout_policy_dump_state *dump_state;
-    int err;
 
     *statep = dump_state = xzalloc(sizeof *dump_state);
-    err = nl_ct_timeout_policy_dump_start(&dump_state->nl_dump_state);
+    int err = nl_ct_timeout_policy_dump_start(&dump_state->nl_dump_state);
     if (err) {
         free(dump_state);
         return err;
