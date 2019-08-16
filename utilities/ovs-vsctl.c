@@ -1182,11 +1182,10 @@ find_ct_zone(struct ovsrec_datapath *dp, const int64_t zone_id)
 static struct ovsrec_ct_timeout_policy *
 create_timeout_policy(struct ctl_context *ctx, char **argv, int n_tps)
 {
+    struct simap new_tp = SIMAP_INITIALIZER(&new_tp);
     const struct ovsrec_ct_timeout_policy_table *tp_table;
     const struct ovsrec_ct_timeout_policy *row;
     struct ovsrec_ct_timeout_policy *tp = NULL;
-    struct simap new_tp = SIMAP_INITIALIZER(&new_tp);
-
     char **policies = xzalloc(sizeof *policies * n_tps);
     const char **key_timeouts = xmalloc(sizeof *key_timeouts * n_tps);
     int64_t *value_timeouts = xmalloc(sizeof *value_timeouts * n_tps);
@@ -1244,30 +1243,27 @@ static void
 cmd_add_zone_tp(struct ctl_context *ctx)
 {
     struct vsctl_context *vsctl_ctx = vsctl_context_cast(ctx);
-    struct ovsrec_ct_timeout_policy *tp;
-    int64_t zone_id;
-
     const char *dp_name = ctx->argv[1];
-    ovs_scan(ctx->argv[2], "zone=%"SCNi64, &zone_id);
-    bool may_exist = shash_find(&ctx->options, "--may-exist") != NULL;
-
     struct ovsrec_datapath *dp = find_datapath(vsctl_ctx, dp_name);
     if (!dp) {
         ctl_fatal("datapath %s does not exist", dp_name);
     }
 
-    int n_tps = ctx->argc - 3;
+    int64_t zone_id;
+    ovs_scan(ctx->argv[2], "zone=%"SCNi64, &zone_id);
     struct ovsrec_ct_zone *zone = find_ct_zone(dp, zone_id);
-
-    if (n_tps <= 0) {
-        ctl_fatal("No timeout policy");
-    }
-
+    bool may_exist = shash_find(&ctx->options, "--may-exist") != NULL;
     if (zone && !may_exist) {
         ctl_fatal("zone id %"PRIu64" already exists", zone_id);
     }
 
-    tp = create_timeout_policy(ctx, &ctx->argv[3], n_tps);
+    int n_tps = ctx->argc - 3;
+    if (n_tps <= 0) {
+        ctl_fatal("No timeout policy");
+    }
+
+    struct ovsrec_ct_timeout_policy *tp =
+        create_timeout_policy(ctx, &ctx->argv[3], n_tps);
     if (zone) {
         ovsrec_ct_zone_set_timeout_policy(zone, tp);
     } else {
