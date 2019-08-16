@@ -31,7 +31,6 @@ struct flags {
     const char *name;
 };
 
-static void ct_dpif_format_ipproto(struct ds *, uint16_t ipproto);
 static void ct_dpif_format_counters(struct ds *,
                                     const struct ct_dpif_counters *);
 static void ct_dpif_format_timestamp(struct ds *,
@@ -315,7 +314,7 @@ ct_dpif_format_entry(const struct ct_dpif_entry *entry, struct ds *ds,
     }
 }
 
-static void
+void
 ct_dpif_format_ipproto(struct ds *ds, uint16_t ipproto)
 {
     const char *name;
