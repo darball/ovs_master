@@ -158,22 +158,23 @@ struct ct_zone {
     uint16_t zone;
     struct simap tp;            /* A map from timeout policy attribute to
                                  * timeout value. */
-    unsigned int last_used;     /* The last idl_seqno that this struct is used
+    unsigned int last_used;     /* The last idl_seqno that this 'ct_zone' used
                                  * in OVSDB. This number is used for garbage
                                  * collection. */
-    struct hmap_node node;      /* Element in struct datapath_cfgs's
-                                 * "ct_zone_timeout_policies" hmap. */
+    struct hmap_node node;      /* Node in 'struct datapath' 'ct_zones'
+                                 * hmap. */
 };
 
 /* Internal representation of datapath configuration table in OVSDB. */
 struct datapath {
     char *type;                 /* Datapath type. */
-    struct hmap ct_zones;       /* "struct ct_zone"s indexed by zone id. */
-    struct hmap_node node;      /* In 'all_datapath_cfgs'. */
+    struct hmap ct_zones;       /* Map of 'struct ct_zone' elements, indexed
+                                 * by 'zone'. */
+    struct hmap_node node;      /* Node in 'all_datapaths' hmap. */
     const struct ovsrec_datapath *dp_cfg;
-    unsigned int last_used;     /* The last idl_seqno that this struct is used
-                                 * in OVSDB. This number is used for garbage
-                                 * collection. */
+    unsigned int last_used;     /* The last idl_seqno that this 'datapath'
+                                 * used in OVSDB. This number is used for
+                                 * garbage collection. */
 };
 
 /* All bridges, indexed by name. */
@@ -712,10 +713,9 @@ static void
 update_datapath_cfgs(const struct ovsrec_open_vswitch *cfg)
 {
     struct datapath *dp, *next;
-    size_t i;
 
-    /* Add new datapath configs. */
-    for (i = 0; i < cfg->n_datapaths; i++) {
+    /* Add new 'datapath's or update existing ones. */
+    for (size_t i = 0; i < cfg->n_datapaths; i++) {
         const struct ovsrec_datapath *dp_cfg = cfg->value_datapaths[i];
         char *dp_name = cfg->key_datapaths[i];
 
@@ -726,7 +726,7 @@ update_datapath_cfgs(const struct ovsrec_open_vswitch *cfg)
         dp->last_used = idl_seqno;
     }
 
-    /* Get rid of deleted datapath configs. */
+    /* Purge deleted 'datapath's. */
     HMAP_FOR_EACH_SAFE (dp, next, node, &all_datapaths) {
         if (dp->last_used != idl_seqno) {
             datapath_destroy(dp);
@@ -740,7 +740,8 @@ reconfigure_ct_zones(struct datapath *dp)
     const struct ovsrec_datapath *dp_cfg = dp->dp_cfg;
     struct ct_zone *ct_zone, *next;
 
-    /* Loop through all zones. Add or update configs. */
+    /* Add new 'ct_zone's or update existing 'ct_zone's based on the database
+     * state. */
     for (size_t i = 0; i < dp_cfg->n_ct_zones; i++) {
         uint16_t zone = dp_cfg->key_ct_zones[i];
         struct ovsrec_ct_zone *zone_cfg = dp_cfg->value_ct_zones[i];
@@ -763,7 +764,7 @@ reconfigure_ct_zones(struct datapath *dp)
         ct_zone->last_used = idl_seqno;
     }
 
-    /* Remove unused ct_zone configs. */
+    /* Purge 'ct_zone's no longer found in the database. */
     HMAP_FOR_EACH_SAFE (ct_zone, next, node, &dp->ct_zones) {
         if (ct_zone->last_used != idl_seqno) {
             ofproto_ct_del_zone_timeout_policy(dp->type, ct_zone->zone);

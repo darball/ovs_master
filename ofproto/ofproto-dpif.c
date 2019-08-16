@@ -168,6 +168,12 @@ struct ct_timeout_policy {
                                  * "ct_tp_kill_list" list. */
 };
 
+/* Periodically try to purge deleted timeout policies from the datapath. Retry
+ * may be necessary if the kernel datapath has a non-zero datapath flow
+ * reference count for the timeout policy. */
+#define TIMEOUT_POLICY_CLEANUP_INTERVAL (300000) /* 5 minutes. */
+static long long int timeout_policy_cleanup_timer;
+
 struct ct_zone {
     uint16_t zone_id;
     struct ct_timeout_policy *ct_tp;
@@ -5294,19 +5300,20 @@ ct_zone_config_uninit(struct dpif_backer *backer)
 static void
 ct_zone_timeout_policy_sweep(struct dpif_backer *backer)
 {
-    if (!ovs_list_is_empty(&backer->ct_tp_kill_list)) {
+    if (!ovs_list_is_empty(&backer->ct_tp_kill_list)
+        && time_msec() >= timeout_policy_cleanup_timer) {
         struct ct_timeout_policy *ct_tp, *next;
 
         LIST_FOR_EACH_SAFE (ct_tp, next, list_node, &backer->ct_tp_kill_list) {
-            int err = ct_dpif_del_timeout_policy(backer->dpif, ct_tp->tp_id);
-            if (!err) {
+            if (!ct_dpif_del_timeout_policy(backer->dpif, ct_tp->tp_id)) {
                 ovs_list_remove(&ct_tp->list_node);
                 ct_timeout_policy_destroy(ct_tp, backer->tp_ids);
             } else {
-                VLOG_INFO_RL(&rl, "failed to delete timeout policy id = "
-                             "%"PRIu32" %s", ct_tp->tp_id, ovs_strerror(err));
+                /* INFO log raised by 'dpif' layer. */
             }
         }
+        timeout_policy_cleanup_timer = time_msec() +
+            TIMEOUT_POLICY_CLEANUP_INTERVAL;
     }
 }
 
