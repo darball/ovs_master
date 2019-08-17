@@ -3071,6 +3071,17 @@ dpif_netlink_format_tp_name(uint32_t id, uint16_t l3num, uint8_t l4num,
     ovs_assert(tp_name->length < CTNL_TIMEOUT_NAME_MAX);
 }
 
+static int
+dpif_netlink_ct_get_timeout_policy_name(struct dpif *dpif OVS_UNUSED,
+    uint32_t tp_id, uint16_t dl_type, uint8_t nw_proto, struct ds *tp_name,
+    bool *is_generic)
+{
+    dpif_netlink_format_tp_name(tp_id,
+        dl_type == ETH_TYPE_IP ? AF_INET : AF_INET6, nw_proto, tp_name);
+    *is_generic = false;
+    return 0;
+}
+
 #define CT_DPIF_NL_TP_TCP_MAPPINGS                              \
     CT_DPIF_NL_TP_MAPPING(TCP, TCP, SYN_SENT, SYN_SENT)         \
     CT_DPIF_NL_TP_MAPPING(TCP, TCP, SYN_RECV, SYN_RECV)         \
@@ -3907,6 +3918,7 @@ const struct dpif_class dpif_netlink_class = {
     dpif_netlink_ct_timeout_policy_dump_start,
     dpif_netlink_ct_timeout_policy_dump_next,
     dpif_netlink_ct_timeout_policy_dump_done,
+    dpif_netlink_ct_get_timeout_policy_name,
     NULL,                       /* ipf_set_enabled */
     NULL,                       /* ipf_set_min_frag */
     NULL,                       /* ipf_set_max_nfrags */

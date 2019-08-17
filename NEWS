@@ -69,6 +69,7 @@ v2.12.0 - xx xxx xxxx
    - Linux datapath:
      * Support for the kernel versions 4.19.x and 4.20.x.
      * Support for the kernel version 5.0.x.
+     * Add support for conntrack zone-based timeout policy.
    - 'ovs-dpctl dump-flows' is no longer suitable for dumping offloaded flows.
      'ovs-appctl dpctl/dump-flows' should be used instead.
    - Add L2 GRE tunnel over IPv6 support.
