@@ -76,6 +76,7 @@ enum ovs_ct_nat {
 /* Conntrack action context for execution. */
 struct ovs_conntrack_info {
 	struct nf_conntrack_helper *helper;
+	struct nf_ct_timeout *nf_ct_timeout;
 	struct nf_conntrack_zone zone;
 	struct nf_conn *ct;
 	u8 commit : 1;
@@ -725,6 +726,7 @@ static bool skb_nfct_cached(struct net *net,
 	struct nf_conn *ct;
 	bool ct_executed = true;
 
+OVS_NLERR(true, "DARRELL skb_nfct_cached enter");
 	ct = nf_ct_get(skb, &ctinfo);
 	if (!ct)
 		ct = ovs_ct_executed(net, key, info, skb, &ct_executed);
@@ -744,6 +746,13 @@ static bool skb_nfct_cached(struct net *net,
 		help = nf_ct_ext_find(ct, NF_CT_EXT_HELPER);
 		if (help && rcu_access_pointer(help->helper) != info->helper)
 			return false;
+	}
+	if (info->nf_ct_timeout) {
+	    struct nf_conn_timeout *timeout_ext = nf_ct_timeout_find(ct);
+	    if (!timeout_ext || info->nf_ct_timeout != timeout_ext->timeout) {
+OVS_NLERR(true, "DARRELL skb_nfct_cached return false");
+	        return false;
+	    }
 	}
 	/* Force conntrack entry direction to the current packet? */
 	if (info->force && CTINFO2DIR(ctinfo) != IP_CT_DIR_ORIGINAL) {
@@ -1701,9 +1710,15 @@ int ovs_ct_copy_action(struct net *net, const struct nlattr *attr,
 
 	if (ct_info.timeout[0]) {
 		if (nf_ct_set_timeout(net, ct_info.ct, family, key->ip.proto,
-				      ct_info.timeout))
+				      ct_info.timeout)) {
 			pr_info_ratelimited("Failed to associated timeout "
 					    "policy `%s'\n", ct_info.timeout);
+		} else {
+			ct_info.nf_ct_timeout = nf_ct_timeout_find(ct_info.ct)->timeout;
+			OVS_NLERR(true,
+					  "DARRELL ovs_ct_copy_action setting ct_info.nf_ct_timeout %p",
+					  ct_info.nf_ct_timeout);
+		}
 	}
 
 	if (helper) {
